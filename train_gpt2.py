@@ -1,6 +1,6 @@
 # sudo apt-get install unzip
 # pip install transformers wandb tiktoken
-# unzip /workspace/vector-index-layer/nanogpt/fineweb.zip -d  /workspace/vector-index-layer/nanogpt/fineweb/
+# unzip /workspace/workspace-vector/vector-index-layer/nanogpt/fineweb.zip -d /workspace/transformer-forget-gate/fineweb/
 
 import torch
 import torch.nn as nn
@@ -32,7 +32,7 @@ model_type = "gpt2"
 load_pretrained = False
 checkpoint_path = None
 
-project_name = f"vec{'-md' if model_type == 'gpt2-medium' else ''}{'-full' if max_steps >= 10000 else ''}"
+project_name = f"fg{'-full' if max_steps >= 10000 else ''}"
 
 tokenizer = tiktoken.get_encoding("gpt2")
 
@@ -86,6 +86,41 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         return x
 
+class ForgetGate(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.c_fc    = nn.Linear(config.n_embd, 1 * config.n_embd)
+        self.gelu    = nn.GELU(approximate='tanh')
+        self.c_proj  = nn.Linear(1 * config.n_embd, config.n_embd)
+        # self.c_proj.NANOGPT_SCALE_INIT = 1
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        x = F.sigmoid(x)
+        return x
+
+
+
+class ForgetGateRelu(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.c_fc    = nn.Linear(config.n_embd, 1 * config.n_embd)
+        self.gelu    = nn.GELU(approximate='tanh')
+        self.c_proj  = nn.Linear(1 * config.n_embd, config.n_embd)
+        # self.c_proj.NANOGPT_SCALE_INIT = 1
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        x = torch.clamp(1 - F.relu(x), 0, 1)
+        return x
+
+
 class Block(nn.Module):
 
     def __init__(self, config):
@@ -93,11 +128,14 @@ class Block(nn.Module):
         self.ln_1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd)
+        self.fg = ForgetGate(config)
+        self.ln_3 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        x = x * self.fg(self.ln_2(x))
+        x = x + self.mlp(self.ln_3(x))
         return x
 
 @dataclass
@@ -415,7 +453,7 @@ if master_process:
     wandb.login(key=wandb_key)
     model_artifact_name = f"{project_name}-model-{random.randint(0, 1000)}"
     run = wandb.init(
-        project="nano-gpt",
+        project="transformer-forget-gate",
         name=project_name,
         config={
             "model_type": model_type,
